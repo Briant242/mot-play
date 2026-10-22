@@ -1,6 +1,6 @@
 <div align="center">
   <!-- Main Banner -->
-  <img src="https://img.sanishtech.com/u/117f8f756efd047a7f46fa316eefdc68.png" width="100%" alt="MOT PLAY Banner">
+  <img src="https://img.sanishtech.com/u/091216e18840e4fecc9a81d3fe67aa6c.png" width="100%" alt="MOT PLAY Banner">
 </div>
 
 <div align="center">
