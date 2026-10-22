@@ -25,10 +25,11 @@ unsigned long lastDebounceTime = 0;
 bool soundEnabled = true;
 int themeMode = 0; 
 
-// Animation & Media states
-unsigned long lastBlinkTime = 0;
-int eyeHeight = 18;
-bool isBlinking = false;
+// Animation & State (Smooth flow variables)
+unsigned long lastAnimUpdate = 0;
+int animStep = 0;
+int targetEyeHeight = 18;
+int currentEyeHeight = 18;
 
 String pcSongTitle = "Idle / No Music";
 bool isMusicPlaying = false; 
@@ -75,14 +76,12 @@ void setup() {
   playStartupMelody();
   delay(150);
 
-  // Boot progress bar
   for (int i = 0; i <= 100; i += 12) {
     display.fillRect(16, 42, i * 0.96, 6, SSD1306_WHITE);
     display.display();
     delay(50);
   }
 
-  // Calibrate touch baseline
   long total = 0;
   for (uint8_t i = 0; i < 10; i++) {
     total += touchRead(TOUCH_PIN);
@@ -91,8 +90,11 @@ void setup() {
   touchThreshold = ((total / 10) * 3) / 4; 
 }
 
+// --- HOME MENU: FAST FLUID TRANSITION & DYNAMIC EQUALIZER ---
 void drawHomeMenu() {
   display.clearDisplay();
+  
+  // Header UI
   display.setTextSize(1);
   display.setCursor(2, 2);
   display.print("MOT PLAY");
@@ -101,40 +103,57 @@ void drawHomeMenu() {
   display.drawLine(0, 12, 128, 12, SSD1306_WHITE);
 
   if (isMusicPlaying) {
-    uint8_t animTick = (millis() / 200) % 4; 
-    
-    display.setCursor(14, 18);
-    display.print("~ VIBING MODE ~");
-    display.setTextSize(2);
-    display.setCursor(32, 32);
-
-    if (animTick == 0)      display.print("^ ^");
-    else if (animTick == 1) display.print("> <");
-    else                    display.print("- -");
+    // --- VIBING MODE: STABLE EQUALIZER BARS ---
+    display.invertDisplay(themeMode == 1);
 
     display.setTextSize(1);
-    display.setCursor(6, 52);
-    display.print("Playing: ");
-    display.print(pcSongTitle.substring(0, 12)); 
+    display.setCursor(24, 16);
+    display.print("~ VIBING MODE ~");
+
+    unsigned long eqMillis = millis() / 80; // Gerakan bar lebih cepat & responsif
+    for (int i = 0; i < 8; i++) {
+      int barHeight = (int)(abs(sin((eqMillis + i) * 0.8)) * 22) + 4;
+      display.fillRect(20 + (i * 12), 48 - barHeight, 8, barHeight, SSD1306_WHITE);
+    }
+
+    display.setTextSize(1);
+    display.setCursor(4, 53);
+    String displayedTitle = pcSongTitle.length() > 18 ? pcSongTitle.substring(0, 18) + ".." : pcSongTitle;
+    display.print(displayedTitle);
 
   } else {
-    if (millis() - lastBlinkTime > random(2500, 5000)) {
-      isBlinking = true;
-      lastBlinkTime = millis();
-    }
-    
-    if (isBlinking) {
-      eyeHeight = 2; 
-      if (millis() - lastBlinkTime > 150) {
-        isBlinking = false;
-        eyeHeight = 18; 
-      }
+    display.invertDisplay(themeMode == 1);
+
+    // --- IDLE MODE: FAST, FLUID & NATURAL FLOW ---
+    // Ubah siklus lebih cepat (tiap 900ms - 1200ms) agar terasa hidup dan mengalir
+    if (millis() - lastAnimUpdate > 1000) {
+      animStep = (animStep + 1) % 4; // Siklus lebih pendek & dinamis
+      lastAnimUpdate = millis();
     }
 
     int centerY = 34;
-    display.fillRoundRect(30, centerY - (eyeHeight / 2), 24, eyeHeight, 4, SSD1306_WHITE);
-    display.fillRoundRect(74, centerY - (eyeHeight / 2), 24, eyeHeight, 4, SSD1306_WHITE);
+    int lX = 30;
+    int rX = 74;
+    int eW = 24;
+    
+    // Logika transisi tinggi dan posisi mata yang lebih cair
+    if (animStep == 1) {
+      targetEyeHeight = 4; // Kedip cepat
+    } else if (animStep == 2) {
+      targetEyeHeight = 18;
+      lX = 33; rX = 77;   // Melirik halus ke kanan
+    } else if (animStep == 3) {
+      targetEyeHeight = 18;
+      lX = 27; rX = 71;   // Melirik halus ke kiri
+    } else {
+      targetEyeHeight = 18; // Normal center
+    }
 
+    // Render bentuk mata dengan posisi yang mengalir
+    display.fillRoundRect(lX, centerY - (targetEyeHeight / 2), eW, targetEyeHeight, 4, SSD1306_WHITE);
+    display.fillRoundRect(rX, centerY - (targetEyeHeight / 2), eW, targetEyeHeight, 4, SSD1306_WHITE);
+
+    // Footer petunjuk
     display.setCursor(14, 53);
     display.print("Touch to switch >");
   }
@@ -175,8 +194,12 @@ void drawPcSyncMenu() {
 
   display.setTextSize(1);
   display.setCursor(6, 35);
-  if (!isMusicPlaying) display.print("[Paused / Idle]");
-  else                 display.print(pcSongTitle);
+  if (!isMusicPlaying) {
+    display.print("[Paused / Idle]");
+  } else {
+    String subTitle = pcSongTitle.length() > 18 ? pcSongTitle.substring(0, 18) + ".." : pcSongTitle;
+    display.print(subTitle);
+  }
 
   display.setCursor(14, 53);
   display.print("Touch to switch >");
@@ -240,6 +263,7 @@ void loop() {
     if (incoming == "PAUSE") {
       isMusicPlaying = false; 
       pcSongTitle = "Paused";
+      display.invertDisplay(themeMode == 1); 
     } else if (incoming.length() > 0) {
       pcSongTitle = incoming;
       isMusicPlaying = true; 
@@ -292,7 +316,7 @@ void loop() {
   lastTouchState = isTouched;
 
   switch(currentMenu) {
-    case 0: drawHomeMenu(); delay(50); break;
+    case 0: drawHomeMenu(); delay(40); break;
     case 1: drawMusicMenu(); delay(100); break;
     case 2: drawPcSyncMenu(); delay(100); break;
     case 3: drawSystemMenu(); delay(100); break;
