@@ -40,10 +40,6 @@
 ## Project Structure
 ```text
 mot-play/
-├── src/
-│   ├── main.cpp         # Main state-machine & logic loop
-│   ├── animations.h     # OLED eye frames & expressions
-│   └── audio_ctrl.h     # MP3 module serial communication
-├── assets/              # Schematic & reference images
+├── mot-play.ino         # Main code
 ├── LICENSE              # MIT License
 └── README.md
