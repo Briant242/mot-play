@@ -22,7 +22,7 @@ Preferences prefs;
 const char* wifiSsid = "OmaTik";
 const char* wifiPassword = "212430jc";
 const String firmwareUrl = "https://github.com/Briant242/mot-play/releases/latest/download/firmware.bin";
-const String currentVersion = "v1.0.0"; // Local firmware version tracking
+const String currentVersion = "v1.1.0"; // Local firmware version tracking
 
 // Weather API config (OpenWeatherMap)
 const char* weatherApiKey = "e85787b881413edea43ef2971ff41aad";
