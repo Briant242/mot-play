@@ -225,7 +225,8 @@
             
             statusBadge.innerText = "Connecting...";
             
-            client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt');
+            // Menggunakan broker Mosquitto test server via Secure WebSocket
+            client = mqtt.connect('wss://test.mosquitto.org:8081/mqtt');
 
             client.on('connect', function () {
                 statusBadge.innerText = "Connected";
