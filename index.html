@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOT PLAY Cloud Dashboard</title>
+    <!-- MQTT Library via CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #0d0d12; color: #fff; padding: 20px; text-align: center; }
+        .card { max-width: 380px; margin: auto; background: #1b1b2f; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 6px; border: none; font-size: 14px; font-weight: bold; box-sizing: border-box; }
+        input { background: #111; color: #fff; border: 1px solid #444; text-align: center; }
+        .btn-primary { background: #6c5ce7; color: #fff; cursor: pointer; }
+        .btn-mood { width: 48%; display: inline-block; cursor: pointer; color: #fff; }
+        #status { font-size: 12px; margin-bottom: 10px; color: #b2bec3; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2 style="color: #a29bfe;">MOT PLAY CLOUD</h2>
+        <div id="status">Status: Disconnected</div>
+        
+        <input type="text" id="deviceId" placeholder="Enter Device ID (e.g. MOT-A1B2)">
+        <button class="btn-primary" onclick="connectMQTT()">Connect to Device</button>
+
+        <hr style="border:0; border-top:1px solid #333; margin: 15px 0;">
+
+        <h3>Controls</h3>
+        <button class="btn-primary" onclick="sendCmd('toggle_sound')">Toggle Sound</button>
+        <button class="btn-primary" onclick="sendCmd('toggle_theme')">Toggle Theme</button>
+
+        <h3 style="margin-top: 15px;">Virtual Pet Mood</h3>
+        <button class="btn-mood" style="background: #0984e3;" onclick="sendCmd('mood:0')">Normal</button>
+        <button class="btn-mood" style="background: #00b894;" onclick="sendCmd('mood:1')">Happy</button>
+        <button class="btn-mood" style="background: #e17055;" onclick="sendCmd('mood:2')">Sleepy</button>
+        <button class="btn-mood" style="background: #d63031;" onclick="sendCmd('mood:3')">Angry</button>
+    </div>
+
+    <script>
+        let client;
+        function connectMQTT() {
+            const devId = document.getElementById('deviceId').value.trim();
+            if(!devId) { alert('Please enter Device ID!'); return; }
+            
+            // Using HiveMQ public WebSocket broker
+            client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt');
+
+            client.on('connect', function () {
+                document.getElementById('status').innerText = "Status: Connected to Cloud (" + devId + ")";
+                document.getElementById('status').style.color = "#55efc4";
+            });
+
+            client.on('error', function (err) {
+                document.getElementById('status').innerText = "Connection Error!";
+                document.getElementById('status').style.color = "#d63031";
+            });
+        }
+
+        function sendCmd(cmd) {
+            const devId = document.getElementById('deviceId').value.trim();
+            if (!client || !client.connected) {
+                alert('Not connected to cloud yet!');
+                return;
+            }
+            const topic = "motplay/device/" + devId + "/cmd";
+            client.publish(topic, cmd);
+        }
+    </script>
+</body>
+</html>
