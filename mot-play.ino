@@ -23,17 +23,19 @@ Preferences prefs;
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
-// Network & Cloud config
 String wifiSsid = "";
 String wifiPassword = "";
-const char* mqttServer = "broker.hivemq.com";
+const char* mqttServer = "test.mosquitto.org";
 const int mqttPort = 1883;
 String deviceId = ""; 
 
-const String firmwareUrl = "https://github.com/Briant242/mot-play/releases/latest/download/firmware.bin";
-const String currentVersion = "v1.4.1"; // Updated version
+String activeSessionId = "";
+unsigned long lastSessionActivity = 0;
+const unsigned long sessionTimeout = 30000; 
 
-// Weather API config
+const String firmwareUrl = "https://github.com/Briant242/mot-play/releases/latest/download/firmware.bin";
+const String currentVersion = "v1.4.2";
+
 const char* weatherApiKey = "e85787b881413edea43ef2971ff41aad";
 String weatherTemp = "--";
 String weatherCond = "READY";
@@ -51,11 +53,10 @@ bool waitingForRelease = false;
 bool soundEnabled = true;
 int themeMode = 0; 
 
-// Virtual pet & state vars
 unsigned long lastAnimUpdate = 0;
 int animStep = 0;
 int targetEyeHeight = 18;
-uint8_t petMood = 0; // 0: Normal, 1: Happy, 2: Sleepy, 3: Angry
+uint8_t petMood = 0; 
 
 bool isMusicPlaying = false; 
 
@@ -66,7 +67,6 @@ void playTone(int freq, int duration) {
   noTone(BUZZER_PIN);
 }
 
-// MQTT Message Callback (Incoming commands from Cloud Web)
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String message = "";
   for (unsigned int i = 0; i < length; i++) {
@@ -74,17 +74,61 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
   message.trim();
 
-  if (message == "toggle_sound") {
-    soundEnabled = !soundEnabled;
-    prefs.putBool("sound", soundEnabled);
-  } else if (message == "toggle_theme") {
-    themeMode = !themeMode;
-    prefs.putInt("theme", themeMode);
-    display.invertDisplay(themeMode == 1);
-  } else if (message.startsWith("mood:")) {
-    petMood = message.substring(5).toInt();
+  if (message.startsWith("CLAIM:")) {
+    String reqId = message.substring(6);
+    String statusTopic = "motplay/device/" + deviceId + "/status";
+    
+    if (activeSessionId == "" || (millis() - lastSessionActivity > sessionTimeout)) {
+      activeSessionId = reqId;
+      lastSessionActivity = millis();
+      mqttClient.publish(statusTopic.c_str(), ("LOCKED:" + reqId).c_str());
+      playTone(2000, 100);
+    } else if (activeSessionId == reqId) {
+      lastSessionActivity = millis();
+      mqttClient.publish(statusTopic.c_str(), ("LOCKED:" + reqId).c_str());
+    } else {
+      mqttClient.publish(statusTopic.c_str(), "DENIED");
+    }
+    return;
   }
-  playTone(2200, 50);
+
+  if (message.startsWith("RELEASE:")) {
+    String reqId = message.substring(8);
+    if (activeSessionId == reqId) {
+      activeSessionId = "";
+      String statusTopic = "motplay/device/" + deviceId + "/status";
+      mqttClient.publish(statusTopic.c_str(), "UNLOCKED");
+    }
+    return;
+  }
+
+  int colonIdx = message.indexOf(':');
+  if (colonIdx != -1) {
+    String senderSession = message.substring(0, colonIdx);
+    String cmd = message.substring(colonIdx + 1);
+
+    if (activeSessionId == "" || activeSessionId == senderSession) {
+      if (activeSessionId == "") {
+        activeSessionId = senderSession;
+      }
+      lastSessionActivity = millis();
+
+      if (cmd == "heartbeat") return;
+
+      if (cmd == "toggle_sound") {
+        soundEnabled = !soundEnabled;
+        prefs.putBool("sound", soundEnabled);
+      } else if (cmd == "toggle_theme") {
+        themeMode = !themeMode;
+        prefs.putInt("theme", themeMode);
+        display.invertDisplay(themeMode == 1);
+      } else if (cmd.startsWith("mood:")) {
+        petMood = cmd.substring(5).toInt();
+        currentMenu = 0; 
+      }
+      playTone(2200, 50);
+    }
+  }
 }
 
 void reconnectMqtt() {
@@ -97,7 +141,6 @@ void reconnectMqtt() {
   }
 }
 
-// Pull and flash firmware from GitHub release
 void performGitHubOTA() {
   display.clearDisplay();
   display.setTextSize(1);
@@ -142,7 +185,6 @@ void performGitHubOTA() {
   WiFi.disconnect(true);
 }
 
-// Check GitHub release tag before triggering OTA download
 void checkForUpdateAndOTA() {
   display.clearDisplay();
   display.setTextSize(1);
@@ -185,7 +227,6 @@ void checkForUpdateAndOTA() {
       int endQ = payload.indexOf("\"", startQ);
       if (endQ != -1) {
         String latestTag = payload.substring(startQ, endQ);
-        
         if (latestTag == currentVersion) {
           display.clearDisplay();
           display.setCursor(22, 28);
@@ -200,7 +241,6 @@ void checkForUpdateAndOTA() {
       }
     }
   }
-  
   http.end();
   performGitHubOTA(); 
 }
@@ -279,12 +319,12 @@ void startWifiConfigPortal() {
 
   WebServer apServer(80);
   apServer.on("/", HTTP_GET, [&]() {
-    String html = "<html style='font-family:sans-serif;background:#0d0d12;color:#fff;padding:20px;'>";
-    html += "<h2 style='color:#a29bfe;'>MOT PLAY - WiFi Setup</h2>";
+    String html = "<html style='font-family:sans-serif;background:#f8f9fb;color:#1e293b;padding:20px;'>";
+    html += "<h2 style='color:#0f172a;'>MOT PLAY - WiFi Setup</h2>";
     html += "<form action='/save' method='POST'>";
-    html += "SSID:<br><input type='text' name='ssid' style='width:100%;padding:10px;margin:10px 0;background:#1b1b2f;color:#fff;border:1px solid #444;'><br>";
-    html += "Password:<br><input type='password' name='pass' style='width:100%;padding:10px;margin:10px 0;background:#1b1b2f;color:#fff;border:1px solid #444;'><br>";
-    html += "<input type='submit' value='Save & Connect' style='width:100%;padding:12px;background:#6c5ce7;color:#fff;border:none;font-weight:bold;'>";
+    html += "SSID:<br><input type='text' name='ssid' style='width:100%;padding:10px;margin:10px 0;background:#fff;color:#1e293b;border:1px solid #cbd5e1;border-radius:6px;'><br>";
+    html += "Password:<br><input type='password' name='pass' style='width:100%;padding:10px;margin:10px 0;background:#fff;color:#1e293b;border:1px solid #cbd5e1;border-radius:6px;'><br>";
+    html += "<input type='submit' value='Save & Connect' style='width:100%;padding:12px;background:#0f172a;color:#fff;border:none;font-weight:bold;border-radius:6px;'>";
     html += "</form></html>";
     apServer.send(200, "text/html", html);
   });
@@ -293,7 +333,7 @@ void startWifiConfigPortal() {
     wifiPassword = apServer.arg("pass");
     prefs.putString("wifi_ssid", wifiSsid);
     prefs.putString("wifi_pass", wifiPassword);
-    apServer.send(200, "text/html", "<h2 style='color:#55efc4;text-align:center;'>Saved! Rebooting...</h2>");
+    apServer.send(200, "text/html", "<h2 style='color:#059669;text-align:center;'>Saved! Rebooting...</h2>");
     delay(2000);
     ESP.restart();
   });
@@ -398,7 +438,6 @@ void drawHomeMenu() {
       display.fillRect(14 + (i * 10), 52 - h, 6, h, SSD1306_WHITE);
     }
   } else {
-    // Timing ticker for pet animations
     if (millis() - lastAnimUpdate > 800) {
       animStep = (animStep + 1) % 4;
       lastAnimUpdate = millis();
@@ -410,28 +449,23 @@ void drawHomeMenu() {
     int eW = 24;
 
     if (petMood == 1) { 
-      // HAPPY: Bounce up and down slightly with round joyful eyes
       int bounce = (animStep % 2 == 0) ? -2 : 2;
       display.fillCircle(lX + 12, centerY + bounce, 10, SSD1306_WHITE);
       display.fillCircle(rX + 12, centerY + bounce, 10, SSD1306_WHITE);
     } else if (petMood == 2) { 
-      // SLEEPY: Breathing effect with thin closing slits and a little Zzz simulation
       int breath = (animStep % 2 == 0) ? 2 : 4;
       display.fillRect(lX, centerY + breath, eW, 4, SSD1306_WHITE);
       display.fillRect(rX, centerY + breath, eW, 4, SSD1306_WHITE);
-      // Small indicator dots above eyes representing heavy breathing / sleep
       if (animStep >= 2) {
         display.fillCircle(rX + 18, centerY - 8, 2, SSD1306_WHITE);
       }
     } else if (petMood == 3) { 
-      // ANGRY: Shaking / twitching angled cross eyes
       int shake = (animStep % 2 == 0) ? -1 : 1;
       display.drawLine(lX + shake, centerY - 6, lX + eW + shake, centerY + 6, SSD1306_WHITE);
       display.drawLine(lX + shake, centerY + 6, lX + eW + shake, centerY - 6, SSD1306_WHITE);
       display.drawLine(rX + shake, centerY - 6, rX + eW + shake, centerY + 6, SSD1306_WHITE);
       display.drawLine(rX + shake, centerY + 6, rX + eW + shake, centerY - 6, SSD1306_WHITE);
     } else { 
-      // NORMAL: Blinking and subtle shifts
       if (animStep == 1) targetEyeHeight = 4; 
       else if (animStep == 2) { targetEyeHeight = 18; lX = 36; rX = 76; } 
       else if (animStep == 3) { targetEyeHeight = 18; lX = 28; rX = 68; } 
@@ -513,6 +547,10 @@ void loop() {
     mqttClient.loop();
   }
 
+  if (activeSessionId != "" && (millis() - lastSessionActivity > sessionTimeout)) {
+    activeSessionId = "";
+  }
+
   if (wifiSsid.length() > 0 && (millis() - lastWeatherFetch > weatherInterval)) {
     fetchLocationAndWeather();
     lastWeatherFetch = millis();
@@ -561,7 +599,7 @@ void loop() {
   lastTouchState = isTouched;
 
   switch(currentMenu) {
-    case 0: drawHomeMenu(); delay(40); mode_delay_skip: break;
+    case 0: drawHomeMenu(); delay(40); break;
     case 1: drawMusicMenu(); delay(100); break;
     case 2: drawWeatherMenu(); delay(100); break;
     case 3: drawSystemMenu(); delay(100); break;
