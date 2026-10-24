@@ -18,16 +18,22 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Preferences prefs;
 
-// Wi-Fi credentials for remote GitHub OTA updates (Change to your network)
+// Network & OTA config
 const char* wifiSsid = "OmaTik";
 const char* wifiPassword = "212430jc";
-
-// Direct GitHub Release binary download URL for automated OTA updates
 const String firmwareUrl = "https://github.com/Briant242/mot-play/releases/latest/download/firmware.bin";
+const String currentVersion = "v1.0.0"; // Local firmware version tracking
+
+// Weather API config (OpenWeatherMap)
+const char* weatherApiKey = "e85787b881413edea43ef2971ff41aad";
+String weatherTemp = "--";
+String weatherCond = "DETECTING";
+unsigned long lastWeatherFetch = 0;
+const unsigned long weatherInterval = 600000; // Fetch every 10 mins
 
 uint8_t currentMenu = 0;        
 uint8_t settingSelection = 0;   
-int touchThreshold = 90; // Auto-calibrated in setup
+int touchThreshold = 90; // Auto-calibrated on boot
 bool lastTouchState = false;
 
 unsigned long touchStartTime = 0;
@@ -36,13 +42,12 @@ bool waitingForRelease = false;
 bool soundEnabled = true;
 int themeMode = 0; 
 
-// Virtual Pet & Mood state variables
+// Virtual pet & state vars
 unsigned long lastAnimUpdate = 0;
 int animStep = 0;
 int targetEyeHeight = 18;
 uint8_t petEnergy = 85; 
 
-// Media state
 bool isMusicPlaying = false; 
 
 void playTone(int freq, int duration) {
@@ -52,72 +57,37 @@ void playTone(int freq, int duration) {
   noTone(BUZZER_PIN);
 }
 
-// Perform automated Over-The-Air firmware update from GitHub Releases with OLED notifications
+// Pull and flash firmware from GitHub release
 void performGitHubOTA() {
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   
-  // Notification: Connecting Wi-Fi
   display.setCursor(16, 20);
-  display.print("CONNECTING");
+  display.print("DOWNLOADING");
   display.setCursor(16, 34);
-  display.print("WIFI...");
+  display.print("UPDATE...");
   display.display();
-
-  // Make sure to fill in your actual Wi-Fi SSID and Password here!
-  WiFi.begin(wifiSsid, wifiPassword);
-  
-  unsigned long wifiStart = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 10000) {
-    delay(500);
-    display.print(".");
-    display.display();
-  }
-
-  // Notification: Connection Failed check
-  if (WiFi.status() != WL_CONNECTED) {
-    display.clearDisplay();
-    display.setCursor(22, 28);
-    display.print("WIFI FAILED!");
-    display.display();
-    playTone(1000, 200); // Error beep
-    delay(2000);
-    WiFi.disconnect(true);
-    return;
-  }
-
-  // Notification: Connected & Downloading
-  display.clearDisplay();
-  display.setCursor(24, 20);
-  display.print("CONNECTED!");
-  display.setCursor(16, 36);
-  display.print("DOWNLOADING...");
-  display.display();
-  playTone(2093, 100); // Success beep
+  playTone(2093, 100);
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.begin(firmwareUrl);
-  int httpCode = http.GET();
+  int code = http.GET();
 
-  if (httpCode == HTTP_CODE_OK) {
-    int contentLength = http.getSize();
-    if (Update.begin(contentLength)) {
-      WiFiClient *clientStream = http.getStreamPtr();
-      size_t written = Update.writeStream(*clientStream);
+  if (code == HTTP_CODE_OK) {
+    int len = http.getSize();
+    if (Update.begin(len)) {
+      WiFiClient *stream = http.getStreamPtr();
+      size_t written = Update.writeStream(*stream);
       
-      if (written == contentLength) {
-        if (Update.end()) {
-          if (Update.isFinished()) {
-            display.clearDisplay();
-            display.setCursor(24, 28);
-            display.print("UPDATE OK!");
-            display.display();
-            delay(2000);
-            ESP.restart();
-          }
-        }
+      if (written == len && Update.end() && Update.isFinished()) {
+        display.clearDisplay();
+        display.setCursor(24, 28);
+        display.print("UPDATE OK!");
+        display.display();
+        delay(2000);
+        ESP.restart();
       }
     }
   } else {
@@ -132,16 +102,142 @@ void performGitHubOTA() {
   WiFi.disconnect(true);
 }
 
-// Playful startup jingle & SaaS Mograph Intro Sequence
+// Check GitHub release tag before triggering OTA download
+void checkForUpdateAndOTA() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  
+  display.setCursor(16, 20);
+  display.print("CHECKING");
+  display.setCursor(16, 34);
+  display.print("UPDATES...");
+  display.display();
+
+  WiFi.begin(wifiSsid, wifiPassword);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+    delay(500);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    display.clearDisplay();
+    display.setCursor(22, 28);
+    display.print("WIFI FAILED!");
+    display.display();
+    playTone(1000, 200);
+    delay(2000);
+    WiFi.disconnect(true);
+    return;
+  }
+
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setUserAgent("ESP32-MOTPLAY");
+  http.begin("https://api.github.com/repos/Briant242/mot-play/releases/latest");
+  int code = http.GET();
+
+  if (code == HTTP_CODE_OK) {
+    String payload = http.getString();
+    int tagIdx = payload.indexOf("\"tag_name\":\"");
+    if (tagIdx != -1) {
+      int startQ = tagIdx + 12;
+      int endQ = payload.indexOf("\"", startQ);
+      if (endQ != -1) {
+        String latestTag = payload.substring(startQ, endQ);
+        
+        if (latestTag == currentVersion) {
+          display.clearDisplay();
+          display.setCursor(22, 28);
+          display.print("UP TO DATE!");
+          display.display();
+          playTone(1500, 100);
+          delay(2000);
+          http.end();
+          WiFi.disconnect(true);
+          return; // Return back to settings menu if no updates found
+        }
+      }
+    }
+  }
+  
+  http.end();
+  performGitHubOTA(); // Proceed to download if new version exists
+}
+
+// Grab IP location & parse OpenWeather JSON manually
+void fetchLocationAndWeather() {
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.begin(wifiSsid, wifiPassword);
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) {
+      delay(500);
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    
+    // Auto-detect city via IP
+    http.begin("http://ip-api.com/json/?fields=status,city");
+    int code = http.GET();
+    String city = "Lumajang";
+
+    if (code == HTTP_CODE_OK) {
+      String payload = http.getString();
+      int idx = payload.indexOf("\"city\":\"");
+      if (idx != -1) {
+        int startQ = idx + 8;
+        int endQ = payload.indexOf("\"", startQ);
+        if (endQ != -1) city = payload.substring(startQ, endQ);
+      }
+    }
+    http.end();
+
+    // Fetch weather data for detected city
+    String url = "http://api.openweathermap.org/data/2.5/weather?q=" + city + "&units=metric&appid=" + String(weatherApiKey);
+    http.begin(url);
+    int wCode = http.GET();
+
+    if (wCode == HTTP_CODE_OK) {
+      String payload = http.getString();
+      
+      int tIdx = payload.indexOf("\"temp\":");
+      if (tIdx != -1) {
+        int cIdx = payload.indexOf(",", tIdx);
+        if (cIdx != -1) {
+          weatherTemp = payload.substring(tIdx + 7, cIdx);
+          int dot = weatherTemp.indexOf('.');
+          if (dot != -1 && dot + 2 < weatherTemp.length()) {
+            weatherTemp = weatherTemp.substring(0, dot + 2);
+          }
+        }
+      }
+
+      int mIdx = payload.indexOf("\"main\":\"");
+      if (mIdx != -1) {
+        int sQ = mIdx + 8;
+        int eQ = payload.indexOf("\"", sQ);
+        if (eQ != -1) {
+          weatherCond = payload.substring(sQ, eQ);
+          weatherCond.toUpperCase();
+        }
+      }
+    }
+    
+    http.end();
+    WiFi.disconnect(true);
+  }
+}
+
+// Startup jingle & boot logo animation
 void playSaaSIntro() {
   display.clearDisplay();
   
-  // Playful startup chime melody
   playTone(1318, 100); 
   playTone(1567, 100); 
   playTone(2093, 180); 
 
-  // Step 1: Display "MOT PLAY" title clearly
   display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(16, 24);
@@ -149,7 +245,6 @@ void playSaaSIntro() {
   display.display();
   delay(1000);
 
-  // Step 2: Display "designed by" subtitle
   display.clearDisplay();
   display.setTextSize(1);
   display.setCursor(32, 28);
@@ -157,7 +252,6 @@ void playSaaSIntro() {
   display.display();
   delay(900);
 
-  // Step 3: SaaS-style mograph expanding bounding box
   for (int w = 4; w <= 120; w += 10) {
     display.clearDisplay();
     display.drawRect((128 - w) / 2, 22, w, 20, SSD1306_WHITE);
@@ -165,7 +259,6 @@ void playSaaSIntro() {
     delay(8);
   }
 
-  // Flash effect for modern tech aesthetic
   display.fillRect(4, 22, 120, 20, SSD1306_WHITE);
   display.display();
   delay(25);
@@ -175,7 +268,6 @@ void playSaaSIntro() {
   display.display();
   delay(40);
 
-  // Step 4: Render crisp GitHub typography "< briant242 />"
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(24, 28);
@@ -200,13 +292,9 @@ void setup() {
     for (;;);
   }
 
-  // Apply saved theme preference (Dark/Light)
   display.invertDisplay(themeMode == 1);
-
-  // Run startup jingle & SaaS mograph intro
   playSaaSIntro();
 
-  // Keep hands away briefly for accurate touch baseline calibration
   delay(400);
 
   long total = 0;
@@ -217,7 +305,6 @@ void setup() {
   touchThreshold = ((total / 10) * 3) / 4; 
 }
 
-// Minimalist top navigation dots across all menus
 void drawMinimalNav() {
   for (int i = 0; i < 5; i++) {
     if (i == currentMenu) {
@@ -228,7 +315,6 @@ void drawMinimalNav() {
   }
 }
 
-// Menu 0: Home / Virtual Pet Mood Station & Music Dancing Mode
 void drawHomeMenu() {
   display.clearDisplay();
   drawMinimalNav();
@@ -285,11 +371,26 @@ void drawMusicMenu() {
 void drawWeatherMenu() {
   display.clearDisplay();
   drawMinimalNav();
-  display.drawCircle(54, 30, 10, SSD1306_WHITE);
-  display.fillCircle(66, 34, 8, SSD1306_WHITE);
-  display.fillRect(56, 36, 18, 6, SSD1306_WHITE);
-  display.setCursor(46, 54);
-  display.print("28 C, SUN");
+
+  if (millis() - lastWeatherFetch > weatherInterval || lastWeatherFetch == 0) {
+    fetchLocationAndWeather();
+    lastWeatherFetch = millis();
+  }
+
+  if (weatherCond.indexOf("SUN") != -1 || weatherCond.indexOf("CLEAR") != -1) {
+    display.fillCircle(64, 28, 9, SSD1306_WHITE); 
+  } else if (weatherCond.indexOf("RAIN") != -1) {
+    display.drawRect(54, 22, 20, 12, SSD1306_WHITE); 
+    display.fillRect(58, 36, 2, 6, SSD1306_WHITE);
+    display.fillRect(66, 36, 2, 6, SSD1306_WHITE);
+  } else {
+    display.drawCircle(58, 28, 8, SSD1306_WHITE); 
+    display.fillCircle(68, 30, 6, SSD1306_WHITE);
+  }
+
+  display.setTextSize(1);
+  display.setCursor(16, 52);
+  display.print(weatherTemp + " C, " + weatherCond);
   display.display();
 }
 
@@ -308,14 +409,25 @@ void drawSettingsMenu() {
   display.clearDisplay();
   drawMinimalNav();
   display.setTextSize(1);
-  display.setCursor(16, 20);
+  
+  // Item 0: Sound
+  display.setCursor(12, 16);
   display.print(settingSelection == 0 ? "> SND: " : "  SND: ");
   display.print(soundEnabled ? "ON" : "OFF");
-  display.setCursor(16, 34);
+  
+  // Item 1: Theme
+  display.setCursor(12, 28);
   display.print(settingSelection == 1 ? "> THM: " : "  THM: ");
   display.print(themeMode == 0 ? "DRK" : "LGT");
-  display.setCursor(16, 48);
-  display.print(settingSelection == 2 ? "> [HOME]" : "  [HOME]");
+  
+  // Item 2: OTA Update Check
+  display.setCursor(12, 40);
+  display.print(settingSelection == 2 ? "> OTA: CHECK" : "  OTA: CHECK");
+
+  // Item 3: Home / Back
+  display.setCursor(12, 52);
+  display.print(settingSelection == 3 ? "> [HOME]" : "  [HOME]");
+  
   display.display();
 }
 
@@ -327,8 +439,6 @@ void loop() {
       isMusicPlaying = true; 
     } else if (incoming == "STOP") {
       isMusicPlaying = false; 
-    } else if (incoming == "OTA") {
-      performGitHubOTA(); // Type "OTA" in Serial Monitor to trigger remote update test
     }
   }
 
@@ -346,7 +456,7 @@ void loop() {
 
     if (duration < 500) {
       if (currentMenu == 4) {
-        settingSelection = (settingSelection + 1) % 3;
+        settingSelection = (settingSelection + 1) % 4; // Cycle through 4 settings options
       } else {
         currentMenu = (currentMenu + 1) % 5; 
       }
@@ -361,6 +471,8 @@ void loop() {
           prefs.putInt("theme", themeMode);
           display.invertDisplay(themeMode == 1);
         } else if (settingSelection == 2) {
+          checkForUpdateAndOTA(); // Trigger interactive OTA check from settings menu
+        } else if (settingSelection == 3) {
           currentMenu = 0;
           settingSelection = 0; 
         }
