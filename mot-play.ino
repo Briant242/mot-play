@@ -2,8 +2,8 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Preferences.h>
-#include <WebServer.h>
 #include <WiFi.h>
+#include <WebServer.h>
 #include <PubSubClient.h>
 #include <HTTPClient.h>
 #include <Update.h>
@@ -28,10 +28,10 @@ String wifiSsid = "";
 String wifiPassword = "";
 const char* mqttServer = "broker.hivemq.com";
 const int mqttPort = 1883;
-String deviceId = ""; // Unique Device ID generated from Chip ID
+String deviceId = ""; 
 
 const String firmwareUrl = "https://github.com/Briant242/mot-play/releases/latest/download/firmware.bin";
-const String currentVersion = "v1.4.0"; 
+const String currentVersion = "v1.4.1"; // Updated version
 
 // Weather API config
 const char* weatherApiKey = "e85787b881413edea43ef2971ff41aad";
@@ -55,7 +55,6 @@ int themeMode = 0;
 unsigned long lastAnimUpdate = 0;
 int animStep = 0;
 int targetEyeHeight = 18;
-uint8_t petEnergy = 85; 
 uint8_t petMood = 0; // 0: Normal, 1: Happy, 2: Sleepy, 3: Angry
 
 bool isMusicPlaying = false; 
@@ -278,7 +277,6 @@ void startWifiConfigPortal() {
   display.display();
   playTone(1318, 100);
 
-  // Minimal AP web server just for WiFi credentials
   WebServer apServer(80);
   apServer.on("/", HTTP_GET, [&]() {
     String html = "<html style='font-family:sans-serif;background:#0d0d12;color:#fff;padding:20px;'>";
@@ -340,7 +338,6 @@ void setup() {
   soundEnabled = prefs.getBool("sound", true);
   themeMode = prefs.getInt("theme", 0);
 
-  // Generate Unique Device ID from ESP32 Chip MAC Address
   uint64_t chipid = ESP.getEfuseMac();
   char idBuf[16];
   sprintf(idBuf, "MOT-%04X", (uint16_t)(chipid >> 32));
@@ -401,7 +398,8 @@ void drawHomeMenu() {
       display.fillRect(14 + (i * 10), 52 - h, 6, h, SSD1306_WHITE);
     }
   } else {
-    if (millis() - lastAnimUpdate > 900) {
+    // Timing ticker for pet animations
+    if (millis() - lastAnimUpdate > 800) {
       animStep = (animStep + 1) % 4;
       lastAnimUpdate = millis();
     }
@@ -412,17 +410,28 @@ void drawHomeMenu() {
     int eW = 24;
 
     if (petMood == 1) { 
-      display.fillCircle(lX + 12, centerY, 10, SSD1306_WHITE);
-      display.fillCircle(rX + 12, centerY, 10, SSD1306_WHITE);
+      // HAPPY: Bounce up and down slightly with round joyful eyes
+      int bounce = (animStep % 2 == 0) ? -2 : 2;
+      display.fillCircle(lX + 12, centerY + bounce, 10, SSD1306_WHITE);
+      display.fillCircle(rX + 12, centerY + bounce, 10, SSD1306_WHITE);
     } else if (petMood == 2) { 
-      display.fillRect(lX, centerY + 4, eW, 4, SSD1306_WHITE);
-      display.fillRect(rX, centerY + 4, eW, 4, SSD1306_WHITE);
+      // SLEEPY: Breathing effect with thin closing slits and a little Zzz simulation
+      int breath = (animStep % 2 == 0) ? 2 : 4;
+      display.fillRect(lX, centerY + breath, eW, 4, SSD1306_WHITE);
+      display.fillRect(rX, centerY + breath, eW, 4, SSD1306_WHITE);
+      // Small indicator dots above eyes representing heavy breathing / sleep
+      if (animStep >= 2) {
+        display.fillCircle(rX + 18, centerY - 8, 2, SSD1306_WHITE);
+      }
     } else if (petMood == 3) { 
-      display.drawLine(lX, centerY - 6, lX + eW, centerY + 6, SSD1306_WHITE);
-      display.drawLine(lX, centerY + 6, lX + eW, centerY - 6, SSD1306_WHITE);
-      display.drawLine(rX, centerY - 6, rX + eW, centerY + 6, SSD1306_WHITE);
-      display.drawLine(rX, centerY + 6, rX + eW, centerY - 6, SSD1306_WHITE);
+      // ANGRY: Shaking / twitching angled cross eyes
+      int shake = (animStep % 2 == 0) ? -1 : 1;
+      display.drawLine(lX + shake, centerY - 6, lX + eW + shake, centerY + 6, SSD1306_WHITE);
+      display.drawLine(lX + shake, centerY + 6, lX + eW + shake, centerY - 6, SSD1306_WHITE);
+      display.drawLine(rX + shake, centerY - 6, rX + eW + shake, centerY + 6, SSD1306_WHITE);
+      display.drawLine(rX + shake, centerY + 6, rX + eW + shake, centerY - 6, SSD1306_WHITE);
     } else { 
+      // NORMAL: Blinking and subtle shifts
       if (animStep == 1) targetEyeHeight = 4; 
       else if (animStep == 2) { targetEyeHeight = 18; lX = 36; rX = 76; } 
       else if (animStep == 3) { targetEyeHeight = 18; lX = 28; rX = 68; } 
@@ -431,9 +440,6 @@ void drawHomeMenu() {
       display.fillRoundRect(lX, centerY - (targetEyeHeight / 2), eW, targetEyeHeight, 4, SSD1306_WHITE);
       display.fillRoundRect(rX, centerY - (targetEyeHeight / 2), eW, targetEyeHeight, 4, SSD1306_WHITE);
     }
-
-    display.drawRect(34, 56, 60, 4, SSD1306_WHITE);
-    display.fillRect(36, 58, (petEnergy * 56) / 100, 2, SSD1306_WHITE);
   }
   display.display();
 }
@@ -555,7 +561,7 @@ void loop() {
   lastTouchState = isTouched;
 
   switch(currentMenu) {
-    case 0: drawHomeMenu(); delay(40); break;
+    case 0: drawHomeMenu(); delay(40); mode_delay_skip: break;
     case 1: drawMusicMenu(); delay(100); break;
     case 2: drawWeatherMenu(); delay(100); break;
     case 3: drawSystemMenu(); delay(100); break;
