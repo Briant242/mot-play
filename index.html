@@ -7,60 +7,242 @@
     <!-- MQTT Library via CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #0d0d12; color: #fff; padding: 20px; text-align: center; }
-        .card { max-width: 380px; margin: auto; background: #1b1b2f; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 6px; border: none; font-size: 14px; font-weight: bold; box-sizing: border-box; }
-        input { background: #111; color: #fff; border: 1px solid #444; text-align: center; }
-        .btn-primary { background: #6c5ce7; color: #fff; cursor: pointer; }
-        .btn-mood { width: 48%; display: inline-block; cursor: pointer; color: #fff; }
-        #status { font-size: 12px; margin-bottom: 10px; color: #b2bec3; }
+        :root {
+            --bg-pearlescent: #f8f9fb;
+            --card-surface: #ffffff;
+            --border-subtle: #e2e8f0;
+            --text-main: #1e293b;
+            --text-muted: #64748b;
+            --accent-dark: #0f172a;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-pearlescent);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        .dashboard-container {
+            width: 100%;
+            max-width: 440px;
+            background-color: var(--card-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .header h2 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--accent-dark);
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 20px;
+            background-color: rgba(239, 68, 68, 0.1);
+            color: #dc2626;
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        .status-badge.connected {
+            background-color: rgba(16, 185, 129, 0.1);
+            color: #059669;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        .input-group {
+            margin-bottom: 16px;
+        }
+
+        label {
+            display: block;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px 16px;
+            background-color: #f8fafc;
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            color: var(--text-main);
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--accent-dark);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: none;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s, transform 0.1s;
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .btn-connect {
+            background-color: var(--accent-dark);
+            color: #fff;
+            margin-bottom: 20px;
+        }
+
+        .btn-connect:hover {
+            opacity: 0.9;
+        }
+
+        .divider {
+            border: 0;
+            border-top: 1px solid var(--border-subtle);
+            margin: 20px 0;
+        }
+
+        .section-title {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .btn-control {
+            background-color: #f1f5f9;
+            color: var(--text-main);
+            border: 1px solid var(--border-subtle);
+        }
+
+        .btn-control:hover {
+            background-color: #e2e8f0;
+        }
+
+        .mood-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        .btn-mood {
+            color: #fff;
+            opacity: 0.95;
+        }
+
+        .btn-mood:hover {
+            opacity: 1;
+        }
+
+        .mood-normal { background-color: #3b82f6; }
+        .mood-happy { background-color: #10b981; }
+        .mood-sleepy { background-color: #6366f1; }
+        .mood-angry { background-color: #ef4444; }
+
+        @media (min-width: 768px) {
+            .dashboard-container {
+                padding: 32px;
+            }
+        }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h2 style="color: #a29bfe;">MOT PLAY CLOUD</h2>
-        <div id="status">Status: Disconnected</div>
-        
-        <input type="text" id="deviceId" placeholder="Enter Device ID (e.g. MOT-A1B2)">
-        <button class="btn-primary" onclick="connectMQTT()">Connect to Device</button>
+    <div class="dashboard-container">
+        <div class="header">
+            <h2>MOT PLAY</h2>
+            <div id="statusBadge" class="status-badge">Offline</div>
+        </div>
 
-        <hr style="border:0; border-top:1px solid #333; margin: 15px 0;">
+        <div class="input-group">
+            <label for="deviceId">Device ID</label>
+            <input type="text" id="deviceId" placeholder="e.g. MOT-A1B2">
+        </div>
+        <button class="btn btn-connect" onclick="connectMQTT()">Connect Device</button>
 
-        <h3>Controls</h3>
-        <button class="btn-primary" onclick="sendCmd('toggle_sound')">Toggle Sound</button>
-        <button class="btn-primary" onclick="sendCmd('toggle_theme')">Toggle Theme</button>
+        <hr class="divider">
 
-        <h3 style="margin-top: 15px;">Virtual Pet Mood</h3>
-        <button class="btn-mood" style="background: #0984e3;" onclick="sendCmd('mood:0')">Normal</button>
-        <button class="btn-mood" style="background: #00b894;" onclick="sendCmd('mood:1')">Happy</button>
-        <button class="btn-mood" style="background: #e17055;" onclick="sendCmd('mood:2')">Sleepy</button>
-        <button class="btn-mood" style="background: #d63031;" onclick="sendCmd('mood:3')">Angry</button>
+        <div class="section-title">Quick Toggles</div>
+        <div class="controls-grid">
+            <button class="btn btn-control" onclick="sendCmd('toggle_sound')">Sound</button>
+            <button class="btn btn-control" onclick="sendCmd('toggle_theme')">Theme</button>
+        </div>
+
+        <div class="section-title">Virtual Pet Mood</div>
+        <div class="mood-grid">
+            <button class="btn btn-mood mood-normal" onclick="sendCmd('mood:0')">Normal</button>
+            <button class="btn btn-mood mood-happy" onclick="sendCmd('mood:1')">Happy</button>
+            <button class="btn btn-mood mood-sleepy" onclick="sendCmd('mood:2')">Sleepy</button>
+            <button class="btn btn-mood mood-angry" onclick="sendCmd('mood:3')">Angry</button>
+        </div>
     </div>
 
     <script>
         let client;
+        const statusBadge = document.getElementById('statusBadge');
+
         function connectMQTT() {
             const devId = document.getElementById('deviceId').value.trim();
-            if(!devId) { alert('Please enter Device ID!'); return; }
+            if(!devId) { alert('Please enter your Device ID!'); return; }
             
-            // Using HiveMQ public WebSocket broker
+            statusBadge.innerText = "Connecting...";
+            
             client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt');
 
             client.on('connect', function () {
-                document.getElementById('status').innerText = "Status: Connected to Cloud (" + devId + ")";
-                document.getElementById('status').style.color = "#55efc4";
+                statusBadge.innerText = "Connected";
+                statusBadge.classList.add('connected');
             });
 
             client.on('error', function (err) {
-                document.getElementById('status').innerText = "Connection Error!";
-                document.getElementById('status').style.color = "#d63031";
+                statusBadge.innerText = "Error";
+                statusBadge.classList.remove('connected');
+                client.end();
             });
         }
 
         function sendCmd(cmd) {
             const devId = document.getElementById('deviceId').value.trim();
             if (!client || !client.connected) {
-                alert('Not connected to cloud yet!');
+                alert('Please connect to the device first!');
                 return;
             }
             const topic = "motplay/device/" + devId + "/cmd";
