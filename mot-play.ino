@@ -3,7 +3,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Preferences.h>
 #include <WiFi.h>
-#include <WebServer.h>
+#include <PubSubClient.h>
 #include <HTTPClient.h>
 #include <Update.h>
 
@@ -18,24 +18,30 @@
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Preferences prefs;
-WebServer server(80); // Web server for wireless config portal on port 80
 
-// Network & OTA config
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+
+// Network & Cloud config
 String wifiSsid = "";
 String wifiPassword = "";
-const String firmwareUrl = "https://github.com/Briant242/mot-play/releases/latest/download/firmware.bin";
-const String currentVersion = "v1.2.0"; 
+const char* mqttServer = "broker.hivemq.com";
+const int mqttPort = 1883;
+String deviceId = ""; // Unique Device ID generated from Chip ID
 
-// Weather API config (OpenWeatherMap)
+const String firmwareUrl = "https://github.com/Briant242/mot-play/releases/latest/download/firmware.bin";
+const String currentVersion = "v1.4.0"; 
+
+// Weather API config
 const char* weatherApiKey = "e85787b881413edea43ef2971ff41aad";
 String weatherTemp = "--";
 String weatherCond = "READY";
 unsigned long lastWeatherFetch = 0;
-const unsigned long weatherInterval = 600000; // Fetch every 10 mins
+const unsigned long weatherInterval = 600000; 
 
 uint8_t currentMenu = 0;        
 uint8_t settingSelection = 0;   
-int touchThreshold = 90; // Auto-calibrated on boot
+int touchThreshold = 90; 
 bool lastTouchState = false;
 
 unsigned long touchStartTime = 0;
@@ -49,6 +55,7 @@ unsigned long lastAnimUpdate = 0;
 int animStep = 0;
 int targetEyeHeight = 18;
 uint8_t petEnergy = 85; 
+uint8_t petMood = 0; // 0: Normal, 1: Happy, 2: Sleepy, 3: Angry
 
 bool isMusicPlaying = false; 
 
@@ -57,6 +64,37 @@ void playTone(int freq, int duration) {
   tone(BUZZER_PIN, freq, duration);
   delay(duration + 15);
   noTone(BUZZER_PIN);
+}
+
+// MQTT Message Callback (Incoming commands from Cloud Web)
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String message = "";
+  for (unsigned int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  message.trim();
+
+  if (message == "toggle_sound") {
+    soundEnabled = !soundEnabled;
+    prefs.putBool("sound", soundEnabled);
+  } else if (message == "toggle_theme") {
+    themeMode = !themeMode;
+    prefs.putInt("theme", themeMode);
+    display.invertDisplay(themeMode == 1);
+  } else if (message.startsWith("mood:")) {
+    petMood = message.substring(5).toInt();
+  }
+  playTone(2200, 50);
+}
+
+void reconnectMqtt() {
+  if (!mqttClient.connected()) {
+    String clientId = "MotPlayClient-" + deviceId;
+    if (mqttClient.connect(clientId.c_str())) {
+      String subTopic = "motplay/device/" + deviceId + "/cmd";
+      mqttClient.subscribe(subTopic.c_str());
+    }
+  }
 }
 
 // Pull and flash firmware from GitHub release
@@ -167,20 +205,15 @@ void checkForUpdateAndOTA() {
   performGitHubOTA(); 
 }
 
-// Non-blocking background IP location & OpenWeather fetch
 void fetchLocationAndWeather() {
-  if (wifiSsid.length() == 0 || wifiSsid == "YOUR_SSID") return;
-
-  WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 6000) {
-    delay(300);
+  if (wifiSsid.length() == 0) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+    delay(3000);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    
-    // Auto-detect city via IP geolocation
     http.begin("http://ip-api.com/json/?fields=status,city");
     int code = http.GET();
     String city = "Lumajang";
@@ -196,14 +229,12 @@ void fetchLocationAndWeather() {
     }
     http.end();
 
-    // Fetch weather data for detected city
     String url = "http://api.openweathermap.org/data/2.5/weather?q=" + city + "&units=metric&appid=" + String(weatherApiKey);
     http.begin(url);
     int wCode = http.GET();
 
     if (wCode == HTTP_CODE_OK) {
       String payload = http.getString();
-      
       int tIdx = payload.indexOf("\"temp\":");
       if (tIdx != -1) {
         int cIdx = payload.indexOf(",", tIdx);
@@ -226,13 +257,10 @@ void fetchLocationAndWeather() {
         }
       }
     }
-    
     http.end();
-    WiFi.disconnect(true);
   }
 }
 
-// Launch wireless Wi-Fi setup captive portal
 void startWifiConfigPortal() {
   WiFi.mode(WIFI_AP);
   WiFi.softAP("MOT-PLAY-SETUP");
@@ -245,59 +273,41 @@ void startWifiConfigPortal() {
   display.setCursor(12, 30);
   display.print("IP: 192.168.4.1");
   display.setCursor(12, 46);
-  display.print("CONNECT PHONE");
+  display.print("CONFIG WIFI");
   display.display();
   playTone(1318, 100);
 
-  server.on("/", HTTP_GET, []() {
-    String html = "<html style='font-family:sans-serif;background:#111;color:#fff;padding:20px;'>";
+  // Minimal AP web server just for WiFi credentials
+  WebServer apServer(80);
+  apServer.on("/", HTTP_GET, [&]() {
+    String html = "<html style='font-family:sans-serif;background:#0d0d12;color:#fff;padding:20px;'>";
     html += "<h2 style='color:#a29bfe;'>MOT PLAY - WiFi Setup</h2>";
     html += "<form action='/save' method='POST'>";
-    html += "SSID:<br><input type='text' name='ssid' style='width:100%;padding:10px;margin:10px 0;background:#222;color:#fff;border:1px solid #555;'><br>";
-    html += "Password:<br><input type='password' name='pass' style='width:100%;padding:10px;margin:10px 0;background:#222;color:#fff;border:1px solid #555;'><br>";
+    html += "SSID:<br><input type='text' name='ssid' style='width:100%;padding:10px;margin:10px 0;background:#1b1b2f;color:#fff;border:1px solid #444;'><br>";
+    html += "Password:<br><input type='password' name='pass' style='width:100%;padding:10px;margin:10px 0;background:#1b1b2f;color:#fff;border:1px solid #444;'><br>";
     html += "<input type='submit' value='Save & Connect' style='width:100%;padding:12px;background:#6c5ce7;color:#fff;border:none;font-weight:bold;'>";
     html += "</form></html>";
-    server.send(200, "text/html", html);
+    apServer.send(200, "text/html", html);
   });
-
-  server.on("/save", HTTP_POST, []() {
-    wifiSsid = server.arg("ssid");
-    wifiPassword = server.arg("pass");
-    
+  apServer.on("/save", HTTP_POST, [&]() {
+    wifiSsid = apServer.arg("ssid");
+    wifiPassword = apServer.arg("pass");
     prefs.putString("wifi_ssid", wifiSsid);
     prefs.putString("wifi_pass", wifiPassword);
-
-    String html = "<html style='font-family:sans-serif;background:#111;color:#fff;padding:20px;text-align:center;'>";
-    html += "<h2 style='color:#55efc4;'>Saved Successfully!</h2>";
-    html += "<p>Device is rebooting. You can close this page.</p></html>";
-    server.send(200, "text/html", html);
-
-    display.clearDisplay();
-    display.setCursor(20, 28);
-    display.print("SAVED! REBOOT");
-    display.display();
-    playTone(2093, 200);
+    apServer.send(200, "text/html", "<h2 style='color:#55efc4;text-align:center;'>Saved! Rebooting...</h2>");
     delay(2000);
     ESP.restart();
   });
-
-  server.begin();
-
-  // Keep portal running until reboot
+  apServer.begin();
   while (true) {
-    server.handleClient();
+    apServer.handleClient();
     delay(2);
   }
 }
 
-// Startup jingle & boot logo animation
 void playSaaSIntro() {
   display.clearDisplay();
-  
-  playTone(1318, 100); 
-  playTone(1567, 100); 
-  playTone(2093, 180); 
-
+  playTone(1318, 100); playTone(1567, 100); playTone(2093, 180); 
   display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(16, 24);
@@ -312,28 +322,11 @@ void playSaaSIntro() {
   display.display();
   delay(900);
 
-  for (int w = 4; w <= 120; w += 10) {
-    display.clearDisplay();
-    display.drawRect((128 - w) / 2, 22, w, 20, SSD1306_WHITE);
-    display.display();
-    delay(8);
-  }
-
-  display.fillRect(4, 22, 120, 20, SSD1306_WHITE);
-  display.display();
-  delay(25);
-
   display.clearDisplay();
   display.drawRect(4, 20, 120, 24, SSD1306_WHITE);
-  display.display();
-  delay(40);
-
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
   display.setCursor(24, 28);
   display.print("< Briant242 />");
   display.display();
-
   playTone(2637, 140);
   delay(1800); 
 }
@@ -346,19 +339,22 @@ void setup() {
   soundEnabled = prefs.getBool("sound", true);
   themeMode = prefs.getInt("theme", 0);
 
-  // Load WiFi credentials from NVS Preferences
+  // Generate Unique Device ID from ESP32 Chip MAC Address
+  uint64_t chipid = ESP.getEfuseMac();
+  char idBuf[16];
+  sprintf(idBuf, "MOT-%04X", (uint16_t)(chipid >> 32));
+  deviceId = String(idBuf);
+
   wifiSsid = prefs.getString("wifi_ssid", "");
   wifiPassword = prefs.getString("wifi_pass", "");
 
   Wire.begin(CUSTOM_SDA, CUSTOM_SCL);
-
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     for (;;);
   }
 
   display.invertDisplay(themeMode == 1);
   playSaaSIntro();
-
   delay(400);
 
   long total = 0;
@@ -368,10 +364,18 @@ void setup() {
   }
   touchThreshold = ((total / 10) * 3) / 4; 
 
-  // Initial background weather fetch if Wi-Fi configured
   if (wifiSsid.length() > 0) {
-    fetchLocationAndWeather();
-    lastWeatherFetch = millis();
+    WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+    unsigned long startW = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startW < 8000) {
+      delay(300);
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      mqttClient.setServer(mqttServer, mqttPort);
+      mqttClient.setCallback(mqttCallback);
+      fetchLocationAndWeather();
+      lastWeatherFetch = millis();
+    }
   }
 }
 
@@ -406,25 +410,30 @@ void drawHomeMenu() {
     int rX = 72;
     int eW = 24;
 
-    if (animStep == 1) {
-      targetEyeHeight = 4; 
-    } else if (animStep == 2) {
-      targetEyeHeight = 18;
-      lX = 36; rX = 76;   
-    } else if (animStep == 3) {
-      targetEyeHeight = 18;
-      lX = 28; rX = 68;   
-    } else {
-      targetEyeHeight = 18; 
-    }
+    if (petMood == 1) { 
+      display.fillCircle(lX + 12, centerY, 10, SSD1306_WHITE);
+      display.fillCircle(rX + 12, centerY, 10, SSD1306_WHITE);
+    } else if (petMood == 2) { 
+      display.fillRect(lX, centerY + 4, eW, 4, SSD1306_WHITE);
+      display.fillRect(rX, centerY + 4, eW, 4, SSD1306_WHITE);
+    } else if (petMood == 3) { 
+      display.drawLine(lX, centerY - 6, lX + eW, centerY + 6, SSD1306_WHITE);
+      display.drawLine(lX, centerY + 6, lX + eW, centerY - 6, SSD1306_WHITE);
+      display.drawLine(rX, centerY - 6, rX + eW, centerY + 6, SSD1306_WHITE);
+      display.drawLine(rX, centerY + 6, rX + eW, centerY - 6, SSD1306_WHITE);
+    } else { 
+      if (animStep == 1) targetEyeHeight = 4; 
+      else if (animStep == 2) { targetEyeHeight = 18; lX = 36; rX = 76; } 
+      else if (animStep == 3) { targetEyeHeight = 18; lX = 28; rX = 68; } 
+      else targetEyeHeight = 18; 
 
-    display.fillRoundRect(lX, centerY - (targetEyeHeight / 2), eW, targetEyeHeight, 4, SSD1306_WHITE);
-    display.fillRoundRect(rX, centerY - (targetEyeHeight / 2), eW, targetEyeHeight, 4, SSD1306_WHITE);
+      display.fillRoundRect(lX, centerY - (targetEyeHeight / 2), eW, targetEyeHeight, 4, SSD1306_WHITE);
+      display.fillRoundRect(rX, centerY - (targetEyeHeight / 2), eW, targetEyeHeight, 4, SSD1306_WHITE);
+    }
 
     display.drawRect(34, 56, 60, 4, SSD1306_WHITE);
     display.fillRect(36, 58, (petEnergy * 56) / 100, 2, SSD1306_WHITE);
   }
-
   display.display();
 }
 
@@ -441,7 +450,6 @@ void drawMusicMenu() {
 void drawWeatherMenu() {
   display.clearDisplay();
   drawMinimalNav();
-
   if (weatherCond.indexOf("SUN") != -1 || weatherCond.indexOf("CLEAR") != -1) {
     display.fillCircle(64, 28, 9, SSD1306_WHITE); 
   } else if (weatherCond.indexOf("RAIN") != -1) {
@@ -452,7 +460,6 @@ void drawWeatherMenu() {
     display.drawCircle(58, 28, 8, SSD1306_WHITE); 
     display.fillCircle(68, 30, 6, SSD1306_WHITE);
   }
-
   display.setTextSize(1);
   display.setCursor(16, 52);
   display.print(weatherTemp + " C, " + weatherCond);
@@ -462,11 +469,13 @@ void drawWeatherMenu() {
 void drawSystemMenu() {
   display.clearDisplay();
   drawMinimalNav();
-  display.drawRect(34, 24, 60, 20, SSD1306_WHITE);
-  display.fillRect(94, 29, 4, 10, SSD1306_WHITE);
-  display.fillRect(38, 28, 40, 12, SSD1306_WHITE);
-  display.setCursor(48, 54);
-  display.print("ESP32");
+  display.setTextSize(1);
+  display.setCursor(6, 14);
+  display.print("ID: " + deviceId);
+  display.setCursor(6, 28);
+  display.print("VER: " + currentVersion);
+  display.setCursor(6, 42);
+  display.print(WiFi.status() == WL_CONNECTED ? "CLOUD: CONNECTED" : "CLOUD: OFFLINE");
   display.display();
 }
 
@@ -474,46 +483,32 @@ void drawSettingsMenu() {
   display.clearDisplay();
   drawMinimalNav();
   display.setTextSize(1);
-  
-  // Item 0: Sound Toggle
   display.setCursor(12, 10);
   display.print(settingSelection == 0 ? "> SND: " : "  SND: ");
   display.print(soundEnabled ? "ON" : "OFF");
-  
-  // Item 1: Theme Toggle
   display.setCursor(12, 22);
   display.print(settingSelection == 1 ? "> THM: " : "  THM: ");
   display.print(themeMode == 0 ? "DRK" : "LGT");
-  
-  // Item 2: WiFi Setup Portal
   display.setCursor(12, 34);
   display.print(settingSelection == 2 ? "> WIFI: SETUP" : "  WIFI: SETUP");
-
-  // Item 3: OTA Check
   display.setCursor(12, 46);
   display.print(settingSelection == 3 ? "> OTA: CHECK" : "  OTA: CHECK");
-
-  // Item 4: Home / Back
   display.setCursor(12, 58);
   display.print(settingSelection == 4 ? "> [HOME]" : "  [HOME]");
-  
   display.display();
 }
 
 void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!mqttClient.connected()) {
+      reconnectMqtt();
+    }
+    mqttClient.loop();
+  }
+
   if (wifiSsid.length() > 0 && (millis() - lastWeatherFetch > weatherInterval)) {
     fetchLocationAndWeather();
     lastWeatherFetch = millis();
-  }
-
-  if (Serial.available() > 0) {
-    String incoming = Serial.readStringUntil('\n');
-    incoming.trim();
-    if (incoming == "PLAY") {
-      isMusicPlaying = true; 
-    } else if (incoming == "STOP") {
-      isMusicPlaying = false; 
-    }
   }
 
   int touchVal = touchRead(TOUCH_PIN);
@@ -530,7 +525,7 @@ void loop() {
 
     if (duration < 500) {
       if (currentMenu == 4) {
-        settingSelection = (settingSelection + 1) % 5; // 5 options in Settings now
+        settingSelection = (settingSelection + 1) % 5; 
       } else {
         currentMenu = (currentMenu + 1) % 5; 
       }
@@ -545,7 +540,7 @@ void loop() {
           prefs.putInt("theme", themeMode);
           display.invertDisplay(themeMode == 1);
         } else if (settingSelection == 2) {
-          startWifiConfigPortal(); // Trigger wireless Wi-Fi setup portal
+          startWifiConfigPortal(); 
         } else if (settingSelection == 3) {
           checkForUpdateAndOTA(); 
         } else if (settingSelection == 4) {
