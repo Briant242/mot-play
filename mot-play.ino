@@ -33,6 +33,10 @@ String activeSessionId = "";
 unsigned long lastSessionActivity = 0;
 const unsigned long sessionTimeout = 30000; 
 
+// Variabel penampung command aman (non-blocking MQTT callback)
+String pendingCommand = "";
+bool newCommandAvailable = false;
+
 const String firmwareUrl = "https://github.com/Briant242/mot-play/releases/latest/download/firmware.bin";
 const String currentVersion = "v1.4.2";
 
@@ -67,12 +71,22 @@ void playTone(int freq, int duration) {
   noTone(BUZZER_PIN);
 }
 
+// MQTT Callback sekarang sangat ringan dan aman dari crash
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String message = "";
   for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
   }
   message.trim();
+  pendingCommand = message;
+  newCommandAvailable = true;
+}
+
+// Eksekusi perintah dipindah ke loop utama agar aman
+void handlePendingCommand() {
+  if (!newCommandAvailable) return;
+  newCommandAvailable = false;
+  String message = pendingCommand;
 
   if (message.startsWith("CLAIM:")) {
     String reqId = message.substring(6);
@@ -546,6 +560,9 @@ void loop() {
     }
     mqttClient.loop();
   }
+
+  // Proses command MQTT dengan aman di luar callback
+  handlePendingCommand();
 
   if (activeSessionId != "" && (millis() - lastSessionActivity > sessionTimeout)) {
     activeSessionId = "";
