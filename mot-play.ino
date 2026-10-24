@@ -3,6 +3,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <WebServer.h>
 #include <HTTPClient.h>
 #include <Update.h>
 
@@ -17,17 +18,18 @@
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Preferences prefs;
+WebServer server(80); // Web server for wireless config portal on port 80
 
 // Network & OTA config
-const char* wifiSsid = "OmaTik";
-const char* wifiPassword = "212430jc";
+String wifiSsid = "";
+String wifiPassword = "";
 const String firmwareUrl = "https://github.com/Briant242/mot-play/releases/latest/download/firmware.bin";
-const String currentVersion = "v1.1.0"; // Local firmware version tracking
+const String currentVersion = "v1.2.0"; 
 
 // Weather API config (OpenWeatherMap)
 const char* weatherApiKey = "e85787b881413edea43ef2971ff41aad";
 String weatherTemp = "--";
-String weatherCond = "DETECTING";
+String weatherCond = "READY";
 unsigned long lastWeatherFetch = 0;
 const unsigned long weatherInterval = 600000; // Fetch every 10 mins
 
@@ -114,7 +116,7 @@ void checkForUpdateAndOTA() {
   display.print("UPDATES...");
   display.display();
 
-  WiFi.begin(wifiSsid, wifiPassword);
+  WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
     delay(500);
@@ -155,30 +157,30 @@ void checkForUpdateAndOTA() {
           delay(2000);
           http.end();
           WiFi.disconnect(true);
-          return; // Return back to settings menu if no updates found
+          return; 
         }
       }
     }
   }
   
   http.end();
-  performGitHubOTA(); // Proceed to download if new version exists
+  performGitHubOTA(); 
 }
 
-// Grab IP location & parse OpenWeather JSON manually
+// Non-blocking background IP location & OpenWeather fetch
 void fetchLocationAndWeather() {
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.begin(wifiSsid, wifiPassword);
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) {
-      delay(500);
-    }
+  if (wifiSsid.length() == 0 || wifiSsid == "YOUR_SSID") return;
+
+  WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 6000) {
+    delay(300);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     
-    // Auto-detect city via IP
+    // Auto-detect city via IP geolocation
     http.begin("http://ip-api.com/json/?fields=status,city");
     int code = http.GET();
     String city = "Lumajang";
@@ -227,6 +229,64 @@ void fetchLocationAndWeather() {
     
     http.end();
     WiFi.disconnect(true);
+  }
+}
+
+// Launch wireless Wi-Fi setup captive portal
+void startWifiConfigPortal() {
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("MOT-PLAY-SETUP");
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(12, 16);
+  display.print("AP: MOT-PLAY");
+  display.setCursor(12, 30);
+  display.print("IP: 192.168.4.1");
+  display.setCursor(12, 46);
+  display.print("CONNECT PHONE");
+  display.display();
+  playTone(1318, 100);
+
+  server.on("/", HTTP_GET, []() {
+    String html = "<html style='font-family:sans-serif;background:#111;color:#fff;padding:20px;'>";
+    html += "<h2 style='color:#a29bfe;'>MOT PLAY - WiFi Setup</h2>";
+    html += "<form action='/save' method='POST'>";
+    html += "SSID:<br><input type='text' name='ssid' style='width:100%;padding:10px;margin:10px 0;background:#222;color:#fff;border:1px solid #555;'><br>";
+    html += "Password:<br><input type='password' name='pass' style='width:100%;padding:10px;margin:10px 0;background:#222;color:#fff;border:1px solid #555;'><br>";
+    html += "<input type='submit' value='Save & Connect' style='width:100%;padding:12px;background:#6c5ce7;color:#fff;border:none;font-weight:bold;'>";
+    html += "</form></html>";
+    server.send(200, "text/html", html);
+  });
+
+  server.on("/save", HTTP_POST, []() {
+    wifiSsid = server.arg("ssid");
+    wifiPassword = server.arg("pass");
+    
+    prefs.putString("wifi_ssid", wifiSsid);
+    prefs.putString("wifi_pass", wifiPassword);
+
+    String html = "<html style='font-family:sans-serif;background:#111;color:#fff;padding:20px;text-align:center;'>";
+    html += "<h2 style='color:#55efc4;'>Saved Successfully!</h2>";
+    html += "<p>Device is rebooting. You can close this page.</p></html>";
+    server.send(200, "text/html", html);
+
+    display.clearDisplay();
+    display.setCursor(20, 28);
+    display.print("SAVED! REBOOT");
+    display.display();
+    playTone(2093, 200);
+    delay(2000);
+    ESP.restart();
+  });
+
+  server.begin();
+
+  // Keep portal running until reboot
+  while (true) {
+    server.handleClient();
+    delay(2);
   }
 }
 
@@ -286,6 +346,10 @@ void setup() {
   soundEnabled = prefs.getBool("sound", true);
   themeMode = prefs.getInt("theme", 0);
 
+  // Load WiFi credentials from NVS Preferences
+  wifiSsid = prefs.getString("wifi_ssid", "");
+  wifiPassword = prefs.getString("wifi_pass", "");
+
   Wire.begin(CUSTOM_SDA, CUSTOM_SCL);
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
@@ -303,6 +367,12 @@ void setup() {
     delay(20);
   }
   touchThreshold = ((total / 10) * 3) / 4; 
+
+  // Initial background weather fetch if Wi-Fi configured
+  if (wifiSsid.length() > 0) {
+    fetchLocationAndWeather();
+    lastWeatherFetch = millis();
+  }
 }
 
 void drawMinimalNav() {
@@ -372,11 +442,6 @@ void drawWeatherMenu() {
   display.clearDisplay();
   drawMinimalNav();
 
-  if (millis() - lastWeatherFetch > weatherInterval || lastWeatherFetch == 0) {
-    fetchLocationAndWeather();
-    lastWeatherFetch = millis();
-  }
-
   if (weatherCond.indexOf("SUN") != -1 || weatherCond.indexOf("CLEAR") != -1) {
     display.fillCircle(64, 28, 9, SSD1306_WHITE); 
   } else if (weatherCond.indexOf("RAIN") != -1) {
@@ -410,28 +475,37 @@ void drawSettingsMenu() {
   drawMinimalNav();
   display.setTextSize(1);
   
-  // Item 0: Sound
-  display.setCursor(12, 16);
+  // Item 0: Sound Toggle
+  display.setCursor(12, 10);
   display.print(settingSelection == 0 ? "> SND: " : "  SND: ");
   display.print(soundEnabled ? "ON" : "OFF");
   
-  // Item 1: Theme
-  display.setCursor(12, 28);
+  // Item 1: Theme Toggle
+  display.setCursor(12, 22);
   display.print(settingSelection == 1 ? "> THM: " : "  THM: ");
   display.print(themeMode == 0 ? "DRK" : "LGT");
   
-  // Item 2: OTA Update Check
-  display.setCursor(12, 40);
-  display.print(settingSelection == 2 ? "> OTA: CHECK" : "  OTA: CHECK");
+  // Item 2: WiFi Setup Portal
+  display.setCursor(12, 34);
+  display.print(settingSelection == 2 ? "> WIFI: SETUP" : "  WIFI: SETUP");
 
-  // Item 3: Home / Back
-  display.setCursor(12, 52);
-  display.print(settingSelection == 3 ? "> [HOME]" : "  [HOME]");
+  // Item 3: OTA Check
+  display.setCursor(12, 46);
+  display.print(settingSelection == 3 ? "> OTA: CHECK" : "  OTA: CHECK");
+
+  // Item 4: Home / Back
+  display.setCursor(12, 58);
+  display.print(settingSelection == 4 ? "> [HOME]" : "  [HOME]");
   
   display.display();
 }
 
 void loop() {
+  if (wifiSsid.length() > 0 && (millis() - lastWeatherFetch > weatherInterval)) {
+    fetchLocationAndWeather();
+    lastWeatherFetch = millis();
+  }
+
   if (Serial.available() > 0) {
     String incoming = Serial.readStringUntil('\n');
     incoming.trim();
@@ -456,7 +530,7 @@ void loop() {
 
     if (duration < 500) {
       if (currentMenu == 4) {
-        settingSelection = (settingSelection + 1) % 4; // Cycle through 4 settings options
+        settingSelection = (settingSelection + 1) % 5; // 5 options in Settings now
       } else {
         currentMenu = (currentMenu + 1) % 5; 
       }
@@ -471,8 +545,10 @@ void loop() {
           prefs.putInt("theme", themeMode);
           display.invertDisplay(themeMode == 1);
         } else if (settingSelection == 2) {
-          checkForUpdateAndOTA(); // Trigger interactive OTA check from settings menu
+          startWifiConfigPortal(); // Trigger wireless Wi-Fi setup portal
         } else if (settingSelection == 3) {
+          checkForUpdateAndOTA(); 
+        } else if (settingSelection == 4) {
           currentMenu = 0;
           settingSelection = 0; 
         }
